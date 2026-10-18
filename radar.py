@@ -23,6 +23,10 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 
+DRAFT_BUDGET_SEC = 150      # суммарный потолок времени на оценки за прогон
+DRAFT_TIMEOUT_SEC = 25      # потолок на один запрос к модели
+_draft_spent = [0.0]
+
 ROOT = Path(__file__).parent
 CONFIG = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
 STATE_FILE = ROOT / "state.json"
@@ -117,9 +121,12 @@ def make_draft(text: str, meta: dict) -> str:
         "РИСК: одна строка, если есть подвох. Если нет, напиши: нет."
     )
     user = f"Заказ:\n{text}\n\nБюджет заказчика: от {meta['budget_lo']} до {meta['budget_hi']} ₽."
+    if _draft_spent[0] >= DRAFT_BUDGET_SEC:
+        return "_Оценка пропущена: исчерпан лимит времени на запросы к модели._"
     provider = CONFIG.get("provider", "openai_compat")
     models = CONFIG.get("models") or [CONFIG.get("model")]
     errors = []
+    started = time.time()
     for model in [m for m in models if m]:
         try:
             if provider == "anthropic":
@@ -143,14 +150,17 @@ def make_draft(text: str, meta: dict) -> str:
                         {"role": "user", "content": user},
                     ],
                 },
-                timeout=90,
+                timeout=DRAFT_TIMEOUT_SEC,
             )
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:  # noqa: BLE001
-            errors.append(f"{model}: {str(e)[:120]}")
-            time.sleep(2)
-    return "_Черновик не создан. " + " | ".join(errors) + "_"
+            errors.append(f"{model.split('/')[-1]}: {str(e)[:90]}")
+            if time.time() - started > DRAFT_BUDGET_SEC / 2:
+                break
+        finally:
+            _draft_spent[0] = _draft_spent[0] + (time.time() - started)
+    return "_Оценку получить не удалось. " + " | ".join(errors) + "_"
 
 
 # ---------- отправка ----------
