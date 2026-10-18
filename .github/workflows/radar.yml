@@ -4,6 +4,9 @@ on:
   schedule:
     - cron: "*/5 * * * *"   # каждые 5 минут (GitHub может задерживать до 10–15)
   workflow_dispatch:         # кнопка «Run workflow» для ручного запуска
+  push:                      # любая правка config.yaml сразу запускает прогон
+    branches: [main]
+    paths-ignore: ["state.json", "README.md"]
 
 permissions:
   contents: write            # чтобы коммитить state.json
