@@ -171,7 +171,14 @@ def format_card(post: dict, meta: dict, draft: str) -> str:
     if meta["budget_hi"]:
         budget = f"{meta['budget_lo']:,} – {meta['budget_hi']:,} ₽".replace(",", " ")
     head = f"🎯 {meta['title'] or 'Заказ'}\n💰 {budget}\n🏷 {' '.join(meta['tags'])}\n🔗 {post['url']}\n"
-    body = post["text"]
+    # в карточке оставляем только суть: бюджет и теги уже есть в шапке
+    lines = []
+    for ln in post["text"].split("\n"):
+        ln = ln.strip()
+        if not ln or ln.startswith(("〰", "💳", "🌐", "📌", "#")) or re.match(r"^От\s", ln):
+            continue
+        lines.append(ln.removeprefix("📝").strip())
+    body = "\n".join(lines)
     if len(body) > 1200:
         body = body[:1200] + "…"
     parts = [head, "— — —", body]
