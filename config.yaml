@@ -38,16 +38,25 @@ stop_words:
   - "битрикс24"
 
 # Провайдер черновиков. "openai_compat" работает с любым API формата OpenAI,
-# "anthropic" с прямым API Claude. Примеры настроек ниже.
+# "anthropic" с прямым API Claude.
 provider: "openai_compat"
-base_url: "https://api.deepseek.com"   # DeepSeek. Другие варианты в README
-model: "deepseek-chat"
+base_url: "https://openrouter.ai/api/v1"
+
+# Модели перебираются по порядку: если первая недоступна или упёрлась в лимит,
+# берётся следующая. Суффикс :free означает нулевую стоимость на OpenRouter.
+models:
+  - "xingchen-agi/xing4.0-29b-a4b:free"
+  - "nvidia/nemotron-3.5-super-vl:free"
+  - "deepseek/deepseek-chat-v3-0324:free"
+  - "meta-llama/llama-3.3-70b-instruct:free"
 #
-# OpenRouter:  base_url "https://openrouter.ai/api/v1", model "anthropic/claude-haiku-5-5" или "deepseek/deepseek-chat"
-# Прямой Claude: provider "anthropic", model "claude-haiku-5-5"
+# Платные варианты, если бесплатных перестанет хватать:
+#   OpenRouter:    models: ["anthropic/claude-haiku-5-5"]
+#   DeepSeek:      base_url "https://api.deepseek.com", models: ["deepseek-chat"]
+#   Прямой Claude: provider "anthropic", models: ["claude-haiku-5-5"]
 
 # Если false, скрипт только фильтрует и присылает заказ без черновика (API не нужен).
-draft_enabled: false
+draft_enabled: true
 
 # Профиль для черновика отклика. Пиши от первого лица, это читает модель.
 profile: |

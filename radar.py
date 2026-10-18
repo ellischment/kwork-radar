@@ -115,22 +115,25 @@ def make_draft(text: str, meta: dict) -> str:
     )
     user = f"Заказ:\n{text}\n\nБюджет заказчика: от {meta['budget_lo']} до {meta['budget_hi']} ₽."
     provider = CONFIG.get("provider", "openai_compat")
-    for attempt in range(3):
+    models = CONFIG.get("models") or [CONFIG.get("model")]
+    errors = []
+    for model in [m for m in models if m]:
         try:
             if provider == "anthropic":
                 import anthropic
                 client = anthropic.Anthropic(api_key=API_KEY)
                 resp = client.messages.create(
-                    model=CONFIG["model"], max_tokens=900, system=system,
+                    model=model, max_tokens=900, system=system,
                     messages=[{"role": "user", "content": user}],
                 )
                 return resp.content[0].text.strip()
             # любой API формата OpenAI: DeepSeek, OpenRouter, российские агрегаторы и т.д.
             r = requests.post(
                 CONFIG["base_url"].rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {API_KEY}"},
+                headers={"Authorization": f"Bearer {API_KEY}",
+                         "X-Title": "kwork-radar"},
                 json={
-                    "model": CONFIG["model"],
+                    "model": model,
                     "max_tokens": 900,
                     "messages": [
                         {"role": "system", "content": system},
@@ -142,10 +145,9 @@ def make_draft(text: str, meta: dict) -> str:
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:  # noqa: BLE001
-            if attempt == 2:
-                return f"_Ошибка API: {e}_"
-            time.sleep(3 * (attempt + 1))
-    return ""
+            errors.append(f"{model}: {str(e)[:120]}")
+            time.sleep(2)
+    return "_Черновик не создан. " + " | ".join(errors) + "_"
 
 
 # ---------- отправка ----------
