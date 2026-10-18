@@ -106,12 +106,14 @@ def make_draft(text: str, meta: dict) -> str:
     if not API_KEY:
         return "_Черновик не создан: нет LLM_API_KEY._"
     system = (
-        "Ты помогаешь фрилансеру писать отклики на заказы с биржи Kwork.\n\n"
+        "Ты помогаешь фрилансеру отбирать заказы на бирже Kwork.\n\n"
         f"Профиль фрилансера:\n{CONFIG['profile']}\n\n{CONFIG['rules']}\n\n"
-        "Формат ответа строго такой:\n"
-        "ОЦЕНКА: одна строка. Брать / Брать с оговоркой / Не брать, и почему в 10 словах.\n"
-        "ЧАСЫ: оценка трудозатрат в часах одним числом или диапазоном.\n"
-        "ОТКЛИК:\nтекст отклика, готовый к вставке."
+        "Формат ответа строго такой, без лишних строк:\n"
+        "ВЕРДИКТ: Брать / С оговоркой / Мимо\n"
+        "ПОЧЕМУ: одна строка, максимум 15 слов.\n"
+        "ЧАСЫ: оценка трудозатрат числом или диапазоном.\n"
+        "ЦЕНА: сколько просить, рубли, в рамках бюджета заказчика.\n"
+        "РИСК: одна строка, если есть подвох. Если нет, напиши: нет."
     )
     user = f"Заказ:\n{text}\n\nБюджет заказчика: от {meta['budget_lo']} до {meta['budget_hi']} ₽."
     provider = CONFIG.get("provider", "openai_compat")
@@ -123,7 +125,7 @@ def make_draft(text: str, meta: dict) -> str:
                 import anthropic
                 client = anthropic.Anthropic(api_key=API_KEY)
                 resp = client.messages.create(
-                    model=model, max_tokens=900, system=system,
+                    model=model, max_tokens=350, system=system,
                     messages=[{"role": "user", "content": user}],
                 )
                 return resp.content[0].text.strip()
@@ -134,7 +136,7 @@ def make_draft(text: str, meta: dict) -> str:
                          "X-Title": "kwork-radar"},
                 json={
                     "model": model,
-                    "max_tokens": 900,
+                    "max_tokens": 350,
                     "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": user},
