@@ -104,82 +104,94 @@ def passes_filter(text: str, meta: dict) -> tuple[bool, str]:
 
 # ---------- черновик ----------
 
-def make_draft(text: str, meta: dict) -> str:
-    if not CONFIG.get("draft_enabled", True):
-        return ""
-    if not API_KEY:
-        return "_Черновик не создан: нет LLM_API_KEY._"
+def _extract_json(text: str) -> dict:
+    """Достаёт первый JSON-объект из ответа, даже если модель обложила его текстом."""
+    depth, start = 0, -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                try:
+                    obj = json.loads(text[start:i + 1])
+                    if isinstance(obj, dict):
+                        return obj
+                except json.JSONDecodeError:
+                    pass
+                start = -1
+    return {}
+
+
+def _call_model(model: str, system: str, user: str) -> str:
+    if CONFIG.get("provider") == "anthropic":
+        import anthropic
+        client = anthropic.Anthropic(api_key=API_KEY)
+        resp = client.messages.create(model=model, max_tokens=500, system=system,
+                                      messages=[{"role": "user", "content": user}])
+        return resp.content[0].text
+    r = requests.post(
+        CONFIG["base_url"].rstrip("/") + "/chat/completions",
+        headers={"Authorization": f"Bearer {API_KEY}", "X-Title": "kwork-radar"},
+        json={"model": model, "max_tokens": 500, "temperature": 0,
+              "messages": [{"role": "system", "content": system},
+                           {"role": "user", "content": user}]},
+        timeout=DRAFT_TIMEOUT_SEC,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
+
+
+def make_draft(text: str, meta: dict) -> tuple[dict, str]:
+    """Возвращает (разобранная оценка, диагностика). Пустой dict означает, что оценки нет."""
+    if not CONFIG.get("draft_enabled", True) or not API_KEY:
+        return {}, "оценка выключена или нет ключа"
+    if _draft_spent[0] >= DRAFT_BUDGET_SEC:
+        return {}, "исчерпан лимит времени на запросы"
+
     system = (
         "Ты помогаешь фрилансеру отбирать заказы на бирже Kwork.\n\n"
         f"Профиль фрилансера:\n{CONFIG['profile']}\n\n{CONFIG['rules']}\n\n"
-        "Формат ответа строго такой, без лишних строк:\n"
-        "ВЕРДИКТ: Брать / С оговоркой / Мимо\n"
-        "ПОЧЕМУ: одна строка, максимум 15 слов.\n"
-        "ЧАСЫ: только её собственные часы, числом или диапазоном.\n"
-        "МИНИМУМ: расчёт себестоимости в виде «3 × 2 500 + 5 000 = 12 500 ₽».\n"
-        "ЦЕНА: сколько просить, рубли, в рамках бюджета заказчика.\n"
-        "РИСК: одна строка, если есть подвох. Если нет, напиши: нет."
+        "КРАЙНЕ ВАЖНО. Ответь ровно одним JSON-объектом и ничем больше. "
+        "Не рассуждай, не пиши план, не используй markdown. "
+        "Все значения строками и ТОЛЬКО по-русски.\n"
+        '{"verdict":"Брать" или "С оговоркой" или "Мимо",'
+        '"why":"одна живая фраза, чем заказ хорош именно для неё",'
+        '"hours":"только её часы, число или диапазон",'
+        '"floor":"себестоимость в виде 3 x 2 500 + 5 000 = 12 500 Р",'
+        '"price":"сколько просить, рубли",'
+        '"risk":"подвох одной фразой или слово нет"}'
     )
     user = f"Заказ:\n{text}\n\nБюджет заказчика: от {meta['budget_lo']} до {meta['budget_hi']} ₽."
-    if _draft_spent[0] >= DRAFT_BUDGET_SEC:
-        return "_Оценка пропущена: исчерпан лимит времени на запросы к модели._"
-    provider = CONFIG.get("provider", "openai_compat")
-    models = CONFIG.get("models") or [CONFIG.get("model")]
-    errors = []
-    started = time.time()
-    for model in [m for m in models if m]:
+
+    notes = []
+    for model in [m for m in (CONFIG.get("models") or []) if m]:
+        started = time.time()
         try:
-            if provider == "anthropic":
-                import anthropic
-                client = anthropic.Anthropic(api_key=API_KEY)
-                resp = client.messages.create(
-                    model=model, max_tokens=350, system=system,
-                    messages=[{"role": "user", "content": user}],
-                )
-                return resp.content[0].text.strip()
-            # любой API формата OpenAI: DeepSeek, OpenRouter, российские агрегаторы и т.д.
-            r = requests.post(
-                CONFIG["base_url"].rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {API_KEY}",
-                         "X-Title": "kwork-radar"},
-                json={
-                    "model": model,
-                    "max_tokens": 350,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": user},
-                    ],
-                },
-                timeout=DRAFT_TIMEOUT_SEC,
-            )
-            r.raise_for_status()
-            return r.json()["choices"][0]["message"]["content"].strip()
+            raw = _call_model(model, system, user)
+            obj = _extract_json(raw)
+            verdict = str(obj.get("verdict", "")).strip()
+            if verdict:
+                out = {k: str(obj.get(k, "")).strip() for k in
+                       ("verdict", "why", "hours", "floor", "price", "risk")}
+                return out, f"{model.split('/')[-1]}"
+            notes.append(f"{model.split('/')[-1]}: ответ без JSON")
         except Exception as e:  # noqa: BLE001
-            errors.append(f"{model.split('/')[-1]}: {str(e)[:90]}")
-            if time.time() - started > DRAFT_BUDGET_SEC / 2:
-                break
+            notes.append(f"{model.split('/')[-1]}: {str(e)[:70]}")
         finally:
             _draft_spent[0] = _draft_spent[0] + (time.time() - started)
-    return "_Оценку получить не удалось. " + " | ".join(errors) + "_"
+        if _draft_spent[0] >= DRAFT_BUDGET_SEC:
+            break
+    return {}, " | ".join(notes)
 
 
 # ---------- разбор оценки ----------
 
-def parse_verdict(text: str) -> dict:
-    """Достаёт поля из ответа модели. Пустые значения означают, что оценки нет."""
-    out = {"verdict": "", "why": "", "hours": "", "floor": "", "price": "", "risk": ""}
-    keys = {"ВЕРДИКТ": "verdict", "ПОЧЕМУ": "why", "ЧАСЫ": "hours",
-            "МИНИМУМ": "floor", "ЦЕНА": "price", "РИСК": "risk"}
-    for line in text.split("\n"):
-        for label, key in keys.items():
-            if line.strip().upper().startswith(label):
-                out[key] = line.split(":", 1)[-1].strip().strip("*_ ")
-    return out
-
-
 def is_worth_attention(v: dict) -> bool:
     """Шлём, только если заказ стоит внимания. Нет оценки — шлём на всякий случай."""
-    verdict = v["verdict"].lower()
+    verdict = v.get("verdict", "").lower()
     if not verdict:
         return True
     return not verdict.startswith("мимо")
@@ -203,29 +215,29 @@ def tg_send(text: str) -> None:
             print("Telegram error:", r.text, file=sys.stderr)
 
 
-def format_card(post: dict, meta: dict, v: dict, raw: str) -> str:
+def format_card(post: dict, meta: dict, v: dict, note: str) -> str:
     budget = ""
     if meta["budget_hi"]:
         budget = f"{meta['budget_lo']:,} – {meta['budget_hi']:,} ₽".replace(",", " ")
 
     head = f"🎯 {meta['title'] or 'Заказ'}\n"
     money = f"💰 {budget}"
-    if v["price"]:
+    if v.get("price"):
         money += f"  ·  просить {v['price']}"
     head += money
-    if v["hours"]:
+    if v.get("hours"):
         head += f"\n⏱ {v['hours']} ч твоего времени"
-        if v["floor"]:
+        if v.get("floor"):
             head += f"  ·  себестоимость {v['floor']}"
 
     parts = [head]
-    if v["why"]:
+    if v.get("why"):
         parts.append(f"\n✅ {v['why']}")
-    risk = v["risk"].lower().strip(" .")
-    if v["risk"] and risk not in ("нет", "отсутствует", "-", "нет рисков"):
+    risk = v.get("risk", "").lower().strip(" .")
+    if v.get("risk") and risk not in ("нет", "отсутствует", "-", "нет рисков"):
         parts.append(f"⚠️ {v['risk']}")
-    if not v["verdict"]:
-        parts.append(f"\nℹ️ Оценка не получена, смотри сама.\n{raw[:200]}")
+    if not v.get("verdict"):
+        parts.append(f"\nℹ️ Оценку получить не удалось, смотри сама. ({note[:120]})")
 
     body = []
     for ln in post["text"].split("\n"):
@@ -264,12 +276,12 @@ def main() -> None:
         print(f"{post['id']}: {meta['title'][:50]!r} -> {'БЕРЁМ' if ok else 'мимо: ' + why}")
         if not ok:
             continue
-        raw = make_draft(post["text"], meta)
-        v = parse_verdict(raw)
+        v, note = make_draft(post["text"], meta)
+        print(f"   оценка: {note}")
         if not is_worth_attention(v):
             print(f"   -> не шлю, вердикт «{v['verdict']}»: {v['why']}")
             continue
-        tg_send(format_card(post, meta, v, raw))
+        tg_send(format_card(post, meta, v, note))
         sent += 1
 
     save_state(state)
