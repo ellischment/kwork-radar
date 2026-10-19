@@ -163,6 +163,28 @@ def make_draft(text: str, meta: dict) -> str:
     return "_Оценку получить не удалось. " + " | ".join(errors) + "_"
 
 
+# ---------- разбор оценки ----------
+
+def parse_verdict(text: str) -> dict:
+    """Достаёт поля из ответа модели. Пустые значения означают, что оценки нет."""
+    out = {"verdict": "", "why": "", "hours": "", "floor": "", "price": "", "risk": ""}
+    keys = {"ВЕРДИКТ": "verdict", "ПОЧЕМУ": "why", "ЧАСЫ": "hours",
+            "МИНИМУМ": "floor", "ЦЕНА": "price", "РИСК": "risk"}
+    for line in text.split("\n"):
+        for label, key in keys.items():
+            if line.strip().upper().startswith(label):
+                out[key] = line.split(":", 1)[-1].strip().strip("*_ ")
+    return out
+
+
+def is_worth_attention(v: dict) -> bool:
+    """Шлём, только если заказ стоит внимания. Нет оценки — шлём на всякий случай."""
+    verdict = v["verdict"].lower()
+    if not verdict:
+        return True
+    return not verdict.startswith("мимо")
+
+
 # ---------- отправка ----------
 
 def tg_send(text: str) -> None:
@@ -181,24 +203,41 @@ def tg_send(text: str) -> None:
             print("Telegram error:", r.text, file=sys.stderr)
 
 
-def format_card(post: dict, meta: dict, draft: str) -> str:
+def format_card(post: dict, meta: dict, v: dict, raw: str) -> str:
     budget = ""
     if meta["budget_hi"]:
         budget = f"{meta['budget_lo']:,} – {meta['budget_hi']:,} ₽".replace(",", " ")
-    head = f"🎯 {meta['title'] or 'Заказ'}\n💰 {budget}\n🏷 {' '.join(meta['tags'])}\n🔗 {post['url']}\n"
-    # в карточке оставляем только суть: бюджет и теги уже есть в шапке
-    lines = []
+
+    head = f"🎯 {meta['title'] or 'Заказ'}\n"
+    money = f"💰 {budget}"
+    if v["price"]:
+        money += f"  ·  просить {v['price']}"
+    head += money
+    if v["hours"]:
+        head += f"\n⏱ {v['hours']} ч твоего времени"
+        if v["floor"]:
+            head += f"  ·  себестоимость {v['floor']}"
+
+    parts = [head]
+    if v["why"]:
+        parts.append(f"\n✅ {v['why']}")
+    risk = v["risk"].lower().strip(" .")
+    if v["risk"] and risk not in ("нет", "отсутствует", "-", "нет рисков"):
+        parts.append(f"⚠️ {v['risk']}")
+    if not v["verdict"]:
+        parts.append(f"\nℹ️ Оценка не получена, смотри сама.\n{raw[:200]}")
+
+    body = []
     for ln in post["text"].split("\n"):
         ln = ln.strip()
         if not ln or ln.startswith(("〰", "💳", "🌐", "📌", "#")) or re.match(r"^От\s", ln):
             continue
-        lines.append(ln.removeprefix("📝").strip())
-    body = "\n".join(lines)
-    if len(body) > 1200:
-        body = body[:1200] + "…"
-    parts = [head, "— — —", body]
-    if draft:
-        parts += ["— — —", draft]
+        body.append(ln.removeprefix("📝").strip())
+    text = "\n".join(body)
+    if len(text) > 700:
+        text = text[:700] + "…"
+    parts.append("\n" + text)
+    parts.append(f"\n🔗 {post['url']}")
     return "\n".join(parts)
 
 
@@ -225,8 +264,12 @@ def main() -> None:
         print(f"{post['id']}: {meta['title'][:50]!r} -> {'БЕРЁМ' if ok else 'мимо: ' + why}")
         if not ok:
             continue
-        draft = make_draft(post["text"], meta)
-        tg_send(format_card(post, meta, draft))
+        raw = make_draft(post["text"], meta)
+        v = parse_verdict(raw)
+        if not is_worth_attention(v):
+            print(f"   -> не шлю, вердикт «{v['verdict']}»: {v['why']}")
+            continue
+        tg_send(format_card(post, meta, v, raw))
         sent += 1
 
     save_state(state)

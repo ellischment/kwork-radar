@@ -1,24 +1,27 @@
 name: kwork-radar
 
+# Одно задание живёт ~5 часов и само опрашивает канал каждые 5 минут.
+# Расписание нужно лишь для перезапуска: GitHub прореживает частые кроны,
+# но пропуск одного-двух часовых запусков не страшен, цикл продолжает работать.
 on:
   schedule:
-    - cron: "*/5 * * * *"   # каждые 5 минут (GitHub может задерживать до 10–15)
-  workflow_dispatch:         # кнопка «Run workflow» для ручного запуска
-  push:                      # любая правка config.yaml сразу запускает прогон
+    - cron: "7 * * * *"      # раз в час, не в ноль минут: там очередь плотнее
+  workflow_dispatch:
+  push:
     branches: [main]
     paths-ignore: ["state.json", "README.md"]
 
 permissions:
-  contents: write            # чтобы коммитить state.json
+  contents: write
 
 concurrency:
   group: radar
-  cancel-in-progress: false
+  cancel-in-progress: true   # новый запуск заменяет старый цикл, без накопления очереди
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 340
     steps:
       - uses: actions/checkout@v4
 
@@ -29,17 +32,22 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Run radar
+      - name: Опрос канала каждые 5 минут
         env:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-        run: python radar.py
-
-      - name: Save state
         run: |
           git config user.name "radar-bot"
           git config user.email "radar-bot@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || git commit -m "state: $(date -u +%Y-%m-%dT%H:%M)"
-          git push
+          end=$(( $(date +%s) + 19200 ))   # 5 часов 20 минут
+          while [ "$(date +%s)" -lt "$end" ]; do
+            python radar.py || echo "прогон упал, продолжаю цикл"
+            git add state.json
+            if ! git diff --cached --quiet; then
+              git commit -q -m "state: $(date -u +%Y-%m-%dT%H:%M)"
+              git pull --rebase -q origin main || true
+              git push -q || echo "push не прошёл, состояние уйдёт в следующий раз"
+            fi
+            sleep 300
+          done
