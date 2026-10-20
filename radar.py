@@ -66,9 +66,18 @@ def fetch_posts(channel: str, lookback: int) -> list[dict]:
             continue
         for br in body.find_all("br"):
             br.replace_with("\n")
+        kid = ""
+        for a in msg.select("a[href]"):
+            m = re.search(r"kwork\.ru/projects/(\d+)", a["href"])
+            if m:
+                kid = m.group(1)
+                break
         text = body.get_text("\n").strip()
         text = re.sub(r"\n{3,}", "\n\n", text)
-        posts.append({"id": post_id, "url": f"https://t.me/{post_id}", "text": text})
+        if not kid:
+            m = re.search(r"kwork\.ru/projects/(\d+)", text)
+            kid = m.group(1) if m else ""
+        posts.append({"id": post_id, "url": f"https://t.me/{post_id}", "text": text, "kid": kid})
     return posts[-lookback:]
 
 
@@ -157,7 +166,7 @@ def make_draft(text: str, meta: dict) -> tuple[dict, str]:
         "КРАЙНЕ ВАЖНО. Ответь ровно одним JSON-объектом и ничем больше. "
         "Не рассуждай, не пиши план, не используй markdown. "
         "Все значения строками и ТОЛЬКО по-русски.\n"
-        '{"verdict":"Брать" или "С оговоркой" или "Мимо",'
+        '{"verdict":"Брать" или "С оговоркой" или "Отзыв" или "Мимо",'
         '"why":"одна живая фраза, чем заказ хорош именно для неё",'
         '"hours":"только её часы, число или диапазон",'
         '"floor":"себестоимость в виде 3 x 2 500 + 5 000 = 12 500 Р",'
@@ -220,7 +229,8 @@ def format_card(post: dict, meta: dict, v: dict, note: str) -> str:
     if meta["budget_hi"]:
         budget = f"{meta['budget_lo']:,} – {meta['budget_hi']:,} ₽".replace(",", " ")
 
-    head = f"🎯 {meta['title'] or 'Заказ'}\n"
+    seed = "🌱 для отзыва · " if v.get("verdict", "").lower().startswith("отзыв") else ""
+    head = f"🎯 {seed}{meta['title'] or 'Заказ'}\n"
     money = f"💰 {budget}"
     if v.get("price"):
         money += f"  ·  просить {v['price']}"
@@ -249,7 +259,11 @@ def format_card(post: dict, meta: dict, v: dict, note: str) -> str:
     if len(text) > 700:
         text = text[:700] + "…"
     parts.append("\n" + text)
-    parts.append(f"\n🔗 {post['url']}")
+    if post.get("kid"):
+        parts.append(f"\n⚡ Откликнуться: https://kwork.ru/new_offer?project={post['kid']}")
+        parts.append(f"🔗 Заказ: https://kwork.ru/projects/{post['kid']}/view")
+    else:
+        parts.append(f"\n🔗 {post['url']}")
     return "\n".join(parts)
 
 
